@@ -159,33 +159,62 @@ jobs:
 
       - name: Initialize repo and sync
         run: |
-          mkdir kernel_workspace && cd kernel_workspace
-          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/${{ github.event.inputs.CPU }} -m ${{ github.event.inputs.FEIL }}.xml
+          set -euo pipefail
       
-          echo "== Patch manifest: remove broken upstream ref =="
+          WORKDIR="kernel_workspace"
+          MANIFEST_URL="https://github.com/OnePlusOSS/kernel_manifest.git"
+          MANIFEST_BRANCH="refs/heads/oneplus/${{ github.event.inputs.CPU }}"
+          MANIFEST_FILE="${{ github.event.inputs.FEIL }}.xml"
+      
+          # 你遇到的死 SHA（repo 在 bazel_common_rules 上 update-ref 会炸）
+          BAD_SHA="f81997d8948c2e88a3c5940fe04c674f605d616f"
+      
+          echo "== Clean workspace =="
+          rm -rf "$WORKDIR"
+          mkdir -p "$WORKDIR"
+          cd "$WORKDIR"
+      
+          echo "== repo init =="
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE"
+      
+          echo "== Patch manifest: remove broken upstream ref + dead pinned revision =="
           # repo 实际生效的是 .repo/manifest.xml，稳妥起见两个都改
-          for f in .repo/manifest.xml .repo/manifests/${{ github.event.inputs.FEIL }}.xml; do
+          for f in .repo/manifest.xml .repo/manifests/"$MANIFEST_FILE"; do
             if [ -f "$f" ]; then
+              # 1) 你原来的修复：去掉坏 upstream
               sed -i 's/ upstream="refs\/heads\/ks-kernel\.lnx\.5\.0\.r3-rel"//g' "$f"
+      
+              # 2) 核心修复：去掉死 SHA 的 revision 钉死
+              sed -i "s/ revision=\"$BAD_SHA\"//g" "$f"
             fi
           done
       
+          echo "== Hard checks =="
           # 强制检查：如果还残留就直接失败，避免“以为修好了其实没修”
           if grep -R 'refs/heads/ks-kernel\.lnx\.5\.0\.r3-rel' -n .repo/manifest.xml .repo/manifests 2>/dev/null; then
             echo "Still found broken upstream after patch!"
             exit 1
           fi
       
+          if grep -R "$BAD_SHA" -n .repo/manifest.xml .repo/manifests 2>/dev/null; then
+            echo "Still found dead SHA in manifest after patch!"
+            exit 1
+          fi
+      
+          echo "== repo sync =="
           repo sync -c --force-sync --no-clone-bundle --no-tags -j1 --fail-fast
       
-          if [  -e kernel_platform/common/BUILD.bazel ]; then
+          echo "== Post-sync patch: remove protected exports constraints =="
+          if [ -e kernel_platform/common/BUILD.bazel ]; then
             sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' kernel_platform/common/BUILD.bazel
           fi
-          if [  -e kernel_platform/msm-kernel/BUILD.bazel ]; then
+      
+          if [ -e kernel_platform/msm-kernel/BUILD.bazel ]; then
             sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' kernel_platform/msm-kernel/BUILD.bazel
           fi
-          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
-          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
+      
+          rm -f kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+          rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
 
 
       # 删除 -dirty 后缀
