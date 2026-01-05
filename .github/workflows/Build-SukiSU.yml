@@ -156,31 +156,37 @@ jobs:
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
           chmod a+x ~/repo
           sudo mv ~/repo /usr/local/bin/repo
+
       - name: Initialize repo and sync
         run: |
           mkdir kernel_workspace && cd kernel_workspace
           repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/${{ github.event.inputs.CPU }} -m ${{ github.event.inputs.FEIL }}.xml --depth=1
       
-          MANIFEST=".repo/manifests/${{ github.event.inputs.FEIL }}.xml"
-          if [ -f "$MANIFEST" ]; then
-            sed -i 's/ revision="ks-kernel\.lnx\.5\.0\.r3-rel"//g' "$MANIFEST"
-            sed -i 's/ revision="refs\/heads\/ks-kernel\.lnx\.5\.0\.r3-rel"//g' "$MANIFEST"
-          else
-            echo "Manifest not found: $MANIFEST"
-            ls -la .repo/manifests || true
+          echo "== Patch manifest: remove broken upstream ref =="
+          # repo 实际生效的是 .repo/manifest.xml，稳妥起见两个都改
+          for f in .repo/manifest.xml .repo/manifests/${{ github.event.inputs.FEIL }}.xml; do
+            if [ -f "$f" ]; then
+              sed -i 's/ upstream="refs\/heads\/ks-kernel\.lnx\.5\.0\.r3-rel"//g' "$f"
+            fi
+          done
+      
+          # 强制检查：如果还残留就直接失败，避免“以为修好了其实没修”
+          if grep -R 'refs/heads/ks-kernel\.lnx\.5\.0\.r3-rel' -n .repo/manifest.xml .repo/manifests 2>/dev/null; then
+            echo "Still found broken upstream after patch!"
             exit 1
           fi
       
           repo sync -c --force-sync --no-clone-bundle --no-tags -j1 --fail-fast
       
-          if [ -e kernel_platform/common/BUILD.bazel ]; then
+          if [  -e kernel_platform/common/BUILD.bazel ]; then
             sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' kernel_platform/common/BUILD.bazel
           fi
-          if [ -e kernel_platform/msm-kernel/BUILD.bazel ]; then
+          if [  -e kernel_platform/msm-kernel/BUILD.bazel ]; then
             sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' kernel_platform/msm-kernel/BUILD.bazel
           fi
           rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
           rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
+
 
       # 删除 -dirty 后缀
       - name: Force remove -dirty suffix
